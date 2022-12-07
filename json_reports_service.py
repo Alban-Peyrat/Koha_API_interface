@@ -42,13 +42,17 @@ class Koha_JSON_reports_service(object):
             self.headers = {
                 "accept":"application/json"
                 }
-            r = requests.get(self.url, headers=self.headers)
             try:
+                r = requests.get(self.url, headers=self.headers)
                 r.raise_for_status()  
             except requests.exceptions.HTTPError:
                 self.status = 'Error'
                 # self.logger.error("{} :: Koha_API_PublicBiblio_Init :: HTTP Status: {} || Method: {} || URL: {} || Response: {}".format(bibnb, r.status_code, r.request.method, r.url, r.text))
                 self.error_msg = "Rapport inconnu ou service indisponible"
+            except requests.exceptions.RequestException as generic_error:
+                self.status = 'Error'
+                # self.logger.error("{} :: Koha_API_PublicBiblio_Init :: Generic exception || URL: {} || {}".format(bibnb, url, generic_error))
+                self.error_msg = "Exception générique, voir les logs pour plus de détails"
             else:
                 self.response = r.content.decode('utf-8')
                 self.status = 'Success'
