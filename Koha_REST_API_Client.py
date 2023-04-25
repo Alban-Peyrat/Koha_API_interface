@@ -13,75 +13,13 @@ import os
 
 NS = {"marc": "http://www.loc.gov/MARC21/slim"}
 
-def validate_bibnb(id):
-    """Checks if the biblionumber is onyl a number, returns a tupple :
-        - {bool}
-        - {str} : biblionumber stripped"""
-    id = id.strip()
-    if not(re.search("^\d*$", id)):
-        return False, id
-    else:
-        return True, id
+# A faire
+# J'ai juste copier-coller la structure de l'API biblios_liblime
+# A l'init du client, reprendre InitOAuth2Session
+# Ensuite, faire les appels
 
-def validate_xml(data=None, file_path=None):
-    """Checks if data or file_path (if data is None) looks like a correct MARCXML.
-    Returns a tupple :
-        - {bool}
-        - ET element if valid, error message else"""
-    # If data is a string, checks if it's valid XML
-    if type(data) == str:
-        try:
-            root = ET.fromstring(data)
-        except ET.ParseError:
-            return False, "data is invalid XML"
-    # If data is a ET.Element, do nothing
-    elif type(data) == ET.Element:
-        root = data
-    # If a file_path was provided
-    # Checks if it exists
-    elif not os.path.exists(file_path):
-        return False, "Provided file does not exist"
-    # Checks if it's valid XML
-    elif type(file_path) == str:
-        try:
-            tree = ET.parse(file_path)
-            root = tree.getroot()
-        except ET.ParseError:
-            return False, "Provided file is invalid XML"
-    else:
-        return False, "No data (or inavlid format) provided"
-    
-    # Checks if it looks like MARCXML
-    if len(root.findall("marc:leader", NS)) != 1:
-        return False, "Valid XML but no (or too much) leader was find"
-    elif len(root.findall("marc:controlfield", NS)) < 1:
-        return False, "Valid XML but no controlfield was find"
-    elif len(root.findall("marc:datafield", NS)) < 1:
-        return False, "Valid XML but no datafield was find"
-    else:
-        return True, ET.tostring(root)
-
-def update_item(items):
-    """Returns "?items=1" if items should be included, or return an empty string.
-    
-    items should be a bool and be true to include items"""
-    if type(items) == bool and items:
-        return "?items=1"
-    else:
-        return ""
-
-def get_biblionumber(record):
-    """Returns the biblionumber of a record as a string, if no biblionumber is found, return an empty string.
-    
-    Takes as argument a MARCXML record as a string."""
-    root = ET.fromstring(record)
-    if root.find("biblionumber") != None:
-        return root.find("biblionumber").text
-    else:
-        return ""
-
-class KohaAPIBibliosClient(object):
-    """KohaAPIBibliosClient
+class KohaRESTAPIClient(object):
+    """KohaRESTAPIClient
     =======
     A set of function to use https://wiki.koha-community.org/wiki/Koha_/svc/_HTTP_API
     On init take as arguments :
@@ -90,7 +28,7 @@ class KohaAPIBibliosClient(object):
     - password
     - service [opt] : service name
 """
-    def __init__(self, koha_url, userid, password, service='KohaAPIBibliosClient'):
+    def __init__(self, koha_url, userid, password, service='KohaRESTAPIClient'):
         self.logger = logging.getLogger(service)
         self.endpoint = str(koha_url) + "cgi-bin/koha/svc/"
         self.service = service
@@ -100,38 +38,19 @@ class KohaAPIBibliosClient(object):
             r.raise_for_status()
         except requests.exceptions.RequestException as generic_error:
             self.status = "Error"
-            self.logger.error("KohaAPIBibliosClient_Init :: Generic exception || URL : {} || Status code : {} || Reason : {} || {}".format(r.url, r.status_code, r.reason, generic_error))
+            self.logger.error("KohaRESTAPIClient_Init :: Generic exception || URL : {} || Status code : {} || Reason : {} || {}".format(r.url, r.status_code, r.reason, generic_error))
             self.error_msg = "Generic exception"
         else:
             # Authentication did not succeed
             if ET.fromstring(r.content.decode("utf-8")).find("status").text != "ok":
                 self.status = "Error"
-                self.logger.error("KohaAPIBibliosClient_Init :: Authentication failed : {}".format(ET.fromstring(r.content.decode("utf-8")).find("status").text))
+                self.logger.error("KohaRESTAPIClient_Init :: Authentication failed : {}".format(ET.fromstring(r.content.decode("utf-8")).find("status").text))
                 self.error_msg = "Authentication failed"
 
             # Authentication succeeded
             self.cookie_jar = r.cookies
             self.status = "Success"
-            self.logger.debug("KohaAPIBibliosClient_Init :: Successfully logged in")
-
-    # ------------- UNIFNISHED
-    # Not found on my server so no why bother coding it
-    # def get_bib_profile(self):
-    #     """Returns fields """
-    #     try:
-    #         r = requests.get('{}bib_profile'.format(self.endpoint), cookies=self.cookie_jar)
-    #         r.raise_for_status()
-    #     except requests.exceptions.RequestException as generic_error:
-    #         self.status = "Error"
-    #         self.logger.error("{} :: Generic exception || URL : {} || Status code : {} || Reason : {} || {}".format(self.service, r.url, r.status_code, r.reason, generic_error))
-    #         self.error_msg = "Generic exception"
-    #     else:
-    #         self.status = "Success"
-    #         self.logger.debug("KohaAPIBibliosClient_Init :: Successfully logged in")
-
-    # Not reason for me to do it at the moment
-    # def import_bib(self):
-    #    """"""
+            self.logger.debug("KohaRESTAPIClient_Init :: Successfully logged in")
 
     def get_biblio(self, id):
         """Returns the XML record as a tupple :
