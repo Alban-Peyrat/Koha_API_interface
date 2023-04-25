@@ -8,49 +8,60 @@ import json
 import requests
 import urllib.parse
 import xml.etree.ElementTree as ET
-import re
-import os
 
 NS = {"marc": "http://www.loc.gov/MARC21/slim"}
 
 # A faire
 # J'ai juste copier-coller la structure de l'API biblios_liblime
-# A l'init du client, reprendre InitOAuth2Session
 # Ensuite, faire les appels
+
+# Token expire après 3600, check sa validité + relancer un get token si nécessaire
+# ya moyen qu'après un call les inforamtions du tokken sont renvoyés
 
 class KohaRESTAPIClient(object):
     """KohaRESTAPIClient
     =======
-    A set of function to use https://wiki.koha-community.org/wiki/Koha_/svc/_HTTP_API
+    A set of function to use Koha REST APIs
     On init take as arguments :
     - koha_url : Koha server URL (no trailing /)
-    - userid
-    - password
+    - client_id
+    - client_secret
     - service [opt] : service name
 """
-    def __init__(self, koha_url, userid, password, service='KohaRESTAPIClient'):
+    def __init__(self, koha_url, client_id, client_secret, service='KohaRESTAPIClient'):
         self.logger = logging.getLogger(service)
-        self.endpoint = str(koha_url) + "cgi-bin/koha/svc/"
+        self.endpoint = str(koha_url) + "/api/v1/"
         self.service = service
 
         try:
-            r = requests.get('{}authentication?userid={}&password={}'.format(self.endpoint, urllib.parse.quote(userid), urllib.parse.quote(password)))
+            r = requests.request(method="POST", url=koha_url + "oauth/token",
+                            data={
+                                "grant_type": "client_credentials",
+                                "client_id": client_id,
+                                "client_secret": client_secret
+                            }
+                        )
             r.raise_for_status()
+        except requests.exceptions.HTTPError:
+            self.status = 'Error'
+            self.logger.error("KohaRESTAPIClient_Init :: HTTP Status: {} || Method: {} || URL: {} || Response: {}".format(r.status_code, r.request.method, r.url, r.text))
+            self.error_msg = r.reason
         except requests.exceptions.RequestException as generic_error:
-            self.status = "Error"
-            self.logger.error("KohaRESTAPIClient_Init :: Generic exception || URL : {} || Status code : {} || Reason : {} || {}".format(r.url, r.status_code, r.reason, generic_error))
-            self.error_msg = "Generic exception"
-        else:
-            # Authentication did not succeed
-            if ET.fromstring(r.content.decode("utf-8")).find("status").text != "ok":
+            try:
                 self.status = "Error"
-                self.logger.error("KohaRESTAPIClient_Init :: Authentication failed : {}".format(ET.fromstring(r.content.decode("utf-8")).find("status").text))
-                self.error_msg = "Authentication failed"
-
-            # Authentication succeeded
-            self.cookie_jar = r.cookies
+                self.logger.error("KohaRESTAPIClient_Init :: Generic exception. HTTP Status: {} || Method: {} || URL : {} || Reason : {} || {}".format(r.status_code, r.request.method, r.url, generic_error))
+                self.error_msg = "Generic exception : " + str(r.reason)
+            except NameError as e:
+                self.status = "Error"
+                self.logger.error("KohaRESTAPIClient_Init :: Generic exception then NameError || {}".format(e))
+                self.error_msg = e
+            
+        else:
+            # Access authorized
+            token = json.loads(r.content)
+            self.token = token
             self.status = "Success"
-            self.logger.debug("KohaRESTAPIClient_Init :: Successfully logged in")
+            self.logger.debug("KohaRESTAPIClient_Init :: Access authorized")
 
     def get_biblio(self, id):
         """Returns the XML record as a tupple :
@@ -142,3 +153,11 @@ class KohaRESTAPIClient(object):
         else:
             self.logger.debug(("{} :: {} ({}_biblio) :: Record updated".format(str(id), self.service, action)))
             return True, r.content.decode('utf-8')
+        
+# ----- Temp tests
+import os
+from dotenv import load_dotenv
+load_dotenv()
+a = KohaRESTAPIClient(os.getenv("KOHA_TEST_URL"), os.getenv("KOHA_TEST_CLIENT_ID"), os.getenv("KOHA_TEST_CLIENT_SECRET"))
+print(a.error_msg)
+# ----- End temp tests
