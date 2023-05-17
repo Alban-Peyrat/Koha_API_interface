@@ -92,7 +92,7 @@ class KohaAPIBibliosClient(object):
 """
     def __init__(self, koha_url, userid, password, service='KohaAPIBibliosClient'):
         self.logger = logging.getLogger(service)
-        self.endpoint = str(koha_url) + "cgi-bin/koha/svc/"
+        self.endpoint = str(koha_url) + "/cgi-bin/koha/svc/"
         self.service = service
 
         try:
@@ -133,12 +133,14 @@ class KohaAPIBibliosClient(object):
     # def import_bib(self):
     #    """"""
 
-    def get_biblio(self, id):
+    def get_biblio(self, id, items=False):
         """Returns the XML record as a tupple :
             - {bool} : success ?
             - {str} the XML record if success, error message if not
         
-            Takes as an argument a biblionumber
+            Takes as an argument :
+            - a biblionumber
+            - [optionnal] items {bool} : include items (False by default)
         """
         # Checks if the provided ID is a number
         valid_bibnb, bibnb = validate_bibnb(id)
@@ -147,8 +149,13 @@ class KohaAPIBibliosClient(object):
             self.logger.error("{} :: {} (get_biblio) :: Invalid input biblionumber".format(str(id), self.service))
             return False, "Invalid input biblionumber"
         
+        if items:
+            item_param = "?items=1"
+        else:
+            item_param = ""
+
         try:
-            r = requests.get('{}bib/{}'.format(self.endpoint, bibnb), cookies=self.cookie_jar)
+            r = requests.get('{}bib/{}{}'.format(self.endpoint, bibnb, item_param), cookies=self.cookie_jar)
             r.raise_for_status()
         except requests.exceptions.RequestException as generic_error:
             self.logger.error("{} (get_biblio) :: Generic exception || URL : {} || Status code : {} || Reason : {} || {}".format(self.service, r.url, r.status_code, r.reason, generic_error))
