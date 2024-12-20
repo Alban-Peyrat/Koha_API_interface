@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*- 
 
 # external imports
-import logging
 import requests
 import json
 import re
@@ -16,25 +15,24 @@ class Koha_JSON_reports_service(object):
     - userid : account userid
     - password : account password
     - [optionnal] asDict {bool}: returns the results as Dict instead of lists
-    - params {list of str} : parameters for the SQL query (in order)
+    - params {list of str, dict or list} : parameters for the SQL query (in order)
 """
 
 # Clef du dict = nom affiché dans Koha /!\ UTILISER QUE DE L'ASCII DEDANS
 
-    def __init__(self,id,kohaUrl, userid, password, asDict=False, params=[], service='Koha_JSON_reports_service'):
-        # self.logger = logging.getLogger(service)
+    def __init__(self, id:str, kohaUrl:str, userid:str, password:str, asDict:bool=False, params=[]):
         self.endpoint = kohaUrl + "/cgi-bin/koha/svc/report?id="
-        self.service = service
-        self.id = str(id)
-        if re.sub("\D", "", self.id) != self.id: # |||revoir cette conditin
+        self.id = str(id).strip()
+        if not re.match(r"^\d+$", self.id):
             self.status = "Error"
-            # self.logger.error("{} :: Koha_API_PublicBiblio :: Biblionumber invalide".format(bibnb))
-            self.error_msg = "Numéro de rapport invalide"
+            self.error_msg = "Invalid report ID"
         else:
-            self.url = "{}{}&userid={}&password={}".format(self.endpoint, self.id, userid, password)
+            self.url = f"{self.endpoint}{self.id}&userid={userid}&password={password}"
             for param in params:
                 if type(params) is dict: # doesn't work
                     self.url += "&param_name={}&sql_params={}".format(param, params[param])
+                elif type(param) is list:
+                    self.url += "&sql_params=" + "%0D%0A".join(param)
                 else:
                     self.url += "&sql_params=" + param
             if asDict:
@@ -46,18 +44,15 @@ class Koha_JSON_reports_service(object):
                 r = requests.get(self.url, headers=self.headers)
                 r.raise_for_status()  
             except requests.exceptions.HTTPError:
-                self.status = 'Error'
-                # self.logger.error("{} :: Koha_API_PublicBiblio_Init :: HTTP Status: {} || Method: {} || URL: {} || Response: {}".format(bibnb, r.status_code, r.request.method, r.url, r.text))
-                self.error_msg = "Rapport inconnu ou service indisponible"
+                self.status = "Error"
+                self.error_msg = "Unknown report or unavailable service"
             except requests.exceptions.RequestException as generic_error:
-                self.status = 'Error'
-                # self.logger.error("{} :: Koha_API_PublicBiblio_Init :: Generic exception || URL: {} || {}".format(bibnb, url, generic_error))
-                self.error_msg = "Exception générique, voir les logs pour plus de détails"
+                self.status = "Error"
+                self.error_msg = f"Genereic error : {generic_error}"
             else:
                 self.response = r.content.decode('utf-8')
-                self.status = 'Success'
+                self.status = "Success"
                 self.data = json.loads(self.response)
-                # self.logger.debug("{} :: Koha_API_PublicBiblio :: Notice trouvée".format(bibnb))
 
     def is_dict(self):
         """Returns True if the results are dictionnaries."""
