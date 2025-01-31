@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*- 
 
-# Coded for Koha 22.11
+# Coded for Koha 23.11
 
 # external imports
 import logging
@@ -9,7 +9,7 @@ import requests
 import re
 import urllib.parse
 import xml.etree.ElementTree as ET
-from typing import Tuple 
+from typing import Dict, List
 from enum import Enum
 
 
@@ -27,6 +27,7 @@ class Content_Type(Enum):
     MARC_IN_JSON = "application/marc-in-json"
     RAW_MARC = "application/marc"
     RAW_TEXT = "text/plain"
+    JSON = "application/json"
 
 class Errors(Enum):
     # Request Error
@@ -36,6 +37,9 @@ class Errors(Enum):
     # Data error
     INVALID_BIBNB = 10
     RECORD_DOES_NOT_EXIST = 11
+    # 2XX : authorities
+    INVALID_AUTH_ID = 200
+    AUTHORIRY_DOES_NOT_EXIST = 201
 
 class Status(Enum):
     UNKNOWN = 0
@@ -44,6 +48,9 @@ class Status(Enum):
 
 class Api_Name(Enum):
     GET_BIBLIO = 0
+    # 2XX : authorities
+    GET_AUTH = 200
+    GET_AUTH_LIST = 201
 
 # ----------------- Func def -----------------
 
@@ -51,10 +58,45 @@ def validate_bibnb(id:str) -> str|None:
     """Checks if the biblionumber is only a number, returns it as a string striped.
     Returns None if biblinoumber is invalid"""
     id = str(id).strip()
-    if not(re.search("^\d*$", id)):
+    if not(re.search(r"^\d*$", id)):
         return None
     else:
         return id
+
+def validate_int(nb:int|str|None, default:int=-1) -> int:
+    """Checks if the number is a positive integer.
+    Returns it as an int, or a default value (-1 by default)"""
+    # Makes sure the default value in correct
+    if type(default) != int:
+        try:
+            default = int(default)
+        except:
+            default = -1
+    # Actual valiqation
+    nb = validate_bibnb(nb)
+    if not nb:
+        return default
+    return int(nb)
+
+def validate_content_type(format:Content_Type|str) -> Content_Type:
+    """Checks if the content type has a legal value
+    Defaults to RAW_MARC if value is illegal
+    
+    Returns a Content_Type member"""
+    if type(format) == Content_Type:
+        return format
+    elif type(format) == str:
+        for member in Content_Type:
+            if member.value == format:
+                return member
+    else:
+        return Content_Type.RAW_MARC
+
+def add_to_dict_if_inexistent(dict:dict, key:str, value:None) -> None:
+    """Checks if this key is already defined in the dict.
+    If not, adds it and the value, else, does nothing"""
+    if not key in dict:
+        dict[key] = value
 
 # ----------------- Class def -----------------
 
@@ -113,6 +155,84 @@ class KohaRESTAPIClient(object):
 
     # ---------- API methods ----------
 
+    # ----- Authorities -----
+    def get_auth(self, id:str, format:Content_Type=Content_Type.RAW_MARC) -> str|Errors:
+        """Returns the authority record WITHOUT decoding it.
+        If an error occurred, returns an Errors element"""
+        # Checks if the provided ID is a number
+        api = Api_Name.GET_AUTH
+        auth_id = validate_bibnb(id)
+        # Leaves if not
+        if auth_id == None:
+            self.log.error(f"{api.name} Invalid input authority ID ({id})")
+            return Errors.INVALID_AUTH_ID
+        # Checks if content-type is correct
+        content_type = validate_content_type(format)
+
+        # Try getting the authority
+        # Hm, I'm getting an error 500 when trying to get the auth record as MARCXML
+        # But other 4 format work, so Idk, marcxml issue ? Though it works for biblios
+        try:
+            headers = {
+                "Authorization":f"{self.token['token_type']} {self.token['access_token']}",
+                "accept":content_type.value
+            }
+            r = requests.get(f"{self.endpoint}authorities/{auth_id}", headers=headers)
+            r.raise_for_status()
+        # Error handling
+        except requests.exceptions.RequestException as generic_error:
+            self.log.request_generic_error(r, generic_error, msg=f"{api.name} Generic exception")
+            if r.status_code == 404:
+                return Errors.AUTHORIRY_DOES_NOT_EXIST
+            else:
+                return Errors.GENERIC_REQUEST_ERROR
+        # Succesfully retrieve the record
+        else:
+            self.log.debug(f"{api.name} Authority {id} retrieved")
+            return r.content
+
+    def list_auth(self, query:Dict={}, format:Content_Type=Content_Type.RAW_MARC, page:int=1, nb_res:int=40, auth_type:str=None) -> str|Errors:
+        """Returns a list of authorities WITHOUT decoding them.
+        If an error occurred, returns an Errors element
+        
+        If an authority type is provided in the query, will use this one"""
+        # Checks if the provided ID is a number
+        api = Api_Name.GET_AUTH_LIST
+        # Checks if content-type is correct
+        content_type = validate_content_type(format)
+        page = validate_int(page, default=1)
+        nb_res = validate_int(nb_res, default=1)
+
+        # Try getting the authority
+        # Hm, I'm getting an error 500 when trying to get the auth record as MARCXML
+        # But other 4 format work, so Idk, marcxml issue ? Though it works for biblios
+        try:
+            headers = {
+                "Authorization":f"{self.token['token_type']} {self.token['access_token']}",
+                "accept":content_type.value
+            }
+            params = {
+                "_page":page,
+                "_per_page":nb_res
+            }
+            data = {}
+            # If query is a dict, use it as body
+            if type(query) == dict:
+                data = query
+            # If an auth type is provided and none was provided in the query, adds it
+            if auth_type:
+                add_to_dict_if_inexistent(data, "framework_id", str(auth_type))
+            r = requests.get(f"{self.endpoint}authorities", headers=headers, data=data, params=params)
+            r.raise_for_status()
+        # Error handling
+        except requests.exceptions.RequestException as generic_error:
+            self.log.request_generic_error(r, generic_error, msg=f"{api.name} Generic exception")
+            return Errors.GENERIC_REQUEST_ERROR
+        # Succesfully retrieve the record
+        else:
+            self.log.debug(f"{api.name} Authority list retrieved")
+            return r.content
+
     # ----- Biblios -----
 
     def get_biblio(self, id:str, format:Content_Type=Content_Type.RAW_MARC) -> str|Errors:
@@ -125,23 +245,16 @@ class KohaRESTAPIClient(object):
         if bibnb == None:
             self.log.error(f"{api.name} Invalid input biblionumber ({id})")
             return Errors.INVALID_BIBNB
-        
         # Checks if content-type is correct
-        content_type = Content_Type.RAW_MARC.value
-        if type(format) == Content_Type:
-            content_type = format.value
-        elif type(format) == str:
-            for member in Content_Type:
-                if member.value == format:
-                    content_type = format
+        content_type = validate_content_type(format)
 
         # Try getting the biblio
         try:
             headers = {
                 "Authorization":f"{self.token['token_type']} {self.token['access_token']}",
-                "accept":content_type
+                "accept":content_type.value
             }
-            r = requests.get(f"{self.endpoint}/biblios/{bibnb}", headers=headers)
+            r = requests.get(f"{self.endpoint}biblios/{bibnb}", headers=headers)
             r.raise_for_status()
         # Error handling
         except requests.exceptions.RequestException as generic_error:
