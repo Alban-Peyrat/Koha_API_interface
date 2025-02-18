@@ -29,6 +29,10 @@ class Content_Type(Enum):
     RAW_TEXT = "text/plain"
     JSON = "application/json"
 
+class Record_Schema(Enum):
+    MARC21 = "MARC21"
+    UNIMARC = "UNIMARC"
+
 class Errors(Enum):
     # Request Error
     GENERIC_REQUEST_ERROR = 0
@@ -40,6 +44,10 @@ class Errors(Enum):
     # 2XX : authorities
     INVALID_AUTH_ID = 200
     AUTHORIRY_DOES_NOT_EXIST = 201
+    # 3XX : parameters errors
+    CONTENT_TYPE_NOT_SUPPORTED = 300
+    RECORD_SCHEMA_NOT_SUPPORTED = 301
+    API_NOT_SUPPORTED = 302
 
 class Status(Enum):
     UNKNOWN = 0
@@ -48,6 +56,8 @@ class Status(Enum):
 
 class Api_Name(Enum):
     GET_BIBLIO = 0
+    UPDATE_BIBLIO = 1
+    ADD_BIBLIO = 2
     # 2XX : authorities
     GET_AUTH = 200
     GET_AUTH_LIST = 201
@@ -78,9 +88,10 @@ def validate_int(nb:int|str|None, default:int=-1) -> int:
         return default
     return int(nb)
 
-def validate_content_type(format:Content_Type|str) -> Content_Type:
+def validate_content_type(format:Content_Type|str, default:bool=True) -> Content_Type|None:
     """Checks if the content type has a legal value
-    Defaults to RAW_MARC if value is illegal
+    Defaults to RAW_MARC if value is illegal,
+    unless optional default argument is set to False, then return None
     
     Returns a Content_Type member"""
     if type(format) == Content_Type:
@@ -90,7 +101,38 @@ def validate_content_type(format:Content_Type|str) -> Content_Type:
             if member.value == format:
                 return member
     else:
-        return Content_Type.RAW_MARC
+        if default:
+            return Content_Type.RAW_MARC
+        return None
+
+def validate_record_schema(schema:Record_Schema|str, default:bool=True) -> Record_Schema|None:
+    """Checks if the record schema has a legal value
+    Defaults to UNIMARC if value is illegal,
+    unless optional default argument is set to False, then return None
+    
+    Returns a Record_Schema member"""
+    if type(schema) == Record_Schema:
+        return schema
+    elif type(schema) == str:
+        for member in Record_Schema:
+            if member.value == schema:
+                return member
+    else:
+        if default:
+            return Record_Schema.UNIMARC
+        return None
+
+def validate_api_name(api:Api_Name|str) -> Api_Name|None:
+    """Checks if the api name has a legal value
+    Returns a Api_Name member or None if it's invalid"""
+    if type(api) == Api_Name:
+        return api
+    elif type(api) == str:
+        for member in Api_Name:
+            if member.value == api:
+                return member
+    else:
+        return None
 
 def add_to_dict_if_inexistent(dict:dict, key:str, value:None) -> None:
     """Checks if this key is already defined in the dict.
@@ -268,6 +310,102 @@ class KohaRESTAPIClient(object):
             self.log.debug(f"{api.name} Record {id} retrieved")
             return r.content
 
+    def __post_biblio(self, api:Api_Name, record:str, format:Content_Type=Content_Type.RAW_MARC, record_schema:Record_Schema=Record_Schema.UNIMARC, framework_id:str=None, id:str=None) -> str|Errors:
+        """Private function for add & update biblio.
+        Returns the API repsonse content (or an error)
+        
+        Takes as argument :
+            - api {Api_Name} : ADD_BIBLIO or UPDATE_BIBLIO
+            - record {str} : record as a string for the format
+            - format {Content_Type} : format of the record, either RAW_MARC (default), MARCXML or MARC_IN_JSON
+            - record_schema {Record_Schema} : UNIMARC (default) or MARC21
+            - [optionnal] framework_id {str} : code of the framework ID in Koha
+            - [optionnal] id {str} : MANDATORY for UPDATE_BIBLIO : the biblionumber to update (useless for ADD_BIBLIO)"""
+        # Check if the api name is correct : if not, return an error
+        api = validate_api_name(api)
+        if api == None or api not in [
+            Api_Name.ADD_BIBLIO,
+            Api_Name.UPDATE_BIBLIO
+            ]:
+            return Errors.API_NOT_SUPPORTED
+        
+        # Check if the content type is correct : if not, return an error
+        content_type = validate_content_type(format, default=False)
+        if content_type == None or content_type in [
+            Content_Type.JSON,
+            Content_Type.RAW_TEXT
+            ]:
+            return Errors.CONTENT_TYPE_NOT_SUPPORTED
+        
+        # Check if the record chema is correct : if not, return an error
+        record_schema = validate_record_schema(record_schema, default=False)
+        if record_schema == None:
+            return Errors.RECORD_SCHEMA_NOT_SUPPORTED
+
+        # If update, validate the biblionumber
+        if api == Api_Name.UPDATE_BIBLIO:
+            bibnb = validate_bibnb(id)
+            # Leaves if not
+            if bibnb == None:
+                self.log.error(f"{api.name} Invalid input biblionumber ({id})")
+                return Errors.INVALID_BIBNB
+
+        # Try psoting the biblio
+        try:
+            headers = {
+                "Authorization":f"{self.token['token_type']} {self.token['access_token']}",
+                "Content-type":content_type.value,
+                "x-record-schema":record_schema.value
+            }
+            # Add framework id if set
+            if framework_id:
+                headers["x-framework-id"] = framework_id
+            data = record # yes just put the record as it is
+            url = f"{self.endpoint}biblios"
+            method = "POST"
+            if api == Api_Name.UPDATE_BIBLIO:
+                url = url + f"/{bibnb}"
+                method = "PUT"
+            r = requests.request(method, url, headers=headers, data=data)
+            r.raise_for_status()
+        # Error handling
+        except requests.exceptions.RequestException as generic_error:
+            self.log.request_generic_error(r, generic_error, msg=f"{api.name} Generic exception")
+            if r.status_code == 404:
+                return Errors.RECORD_DOES_NOT_EXIST
+            else:
+                return Errors.GENERIC_REQUEST_ERROR
+        # Succesfully retrieve the record
+        else:
+            if api == Api_Name.UPDATE_BIBLIO:
+                self.log.debug(f"{api.name} Record {id} updated")
+            else:
+                self.log.debug(f"{api.name} Record added")
+            return r.content
+
+    def add_biblio(self, record:str, format:Content_Type=Content_Type.RAW_MARC, record_schema:Record_Schema=Record_Schema.UNIMARC, framework_id:str=None) -> str|Errors:
+        """Add a new biblio record to Koha
+        Returns the API repsonse content (or an error)
+        
+        Takes as argument :
+            - record {str} : record as a string for the format
+            - format {Content_Type} : format of the record, either RAW_MARC (default), MARCXML or MARC_IN_JSON
+            - record_schema {Record_Schema} : UNIMARC (default) or MARC21
+            - [optionnal] framework_id {str} : code of the framework ID in Koha"""
+        return self.__post_biblio(Api_Name.ADD_BIBLIO, record=record, format=format, record_schema=record_schema, framework_id=framework_id)
+
+    def update_biblio(self, id:str, record:str, format:Content_Type=Content_Type.RAW_MARC, record_schema:Record_Schema=Record_Schema.UNIMARC, framework_id:str=None) -> str|Errors:
+        """Update a biblio record in Koha 
+        Returns the API repsonse content (or an error)
+        
+        Takes as argument :
+            - id {str} : the biblionumber to update
+            - record {str} : record as a string for the format
+            - format {Content_Type} : format of the record, either RAW_MARC (default), MARCXML or MARC_IN_JSON
+            - record_schema {Record_Schema} : UNIMARC (default) or MARC21
+            - [optionnal] framework_id {str} : code of the framework ID in Koha"""
+        return self.__post_biblio(Api_Name.UPDATE_BIBLIO, record=record, format=format, record_schema=record_schema, framework_id=framework_id, id=id)
+
     # ---------- Logger methods for other classes / functions ----------
     def init_logger(self):
         """Init the logger"""
@@ -343,72 +481,3 @@ class KohaRESTAPIClient(object):
         def error(self, msg:str):
             """Log a error statement logging first the service then the message"""
             self.logger.error(f"{self.parent.service} :: {msg}")
-
-
-
-
-
-
-    # def post_biblio(self, id, data=None, file_path=None, items=False, action="update"):
-    #     """Update the record 
-    #     Returns the XML record as a tupple :
-    #         - {bool} : success ?
-    #         - {str} the XML record if success, error message if not
-        
-    #     Takes as an argument :
-    #         - a biblionumber
-    #         - data OR file_path : data should be a XML record, file_path must be the full path to a MARCXML record
-    #         - action :
-    #             - "update"
-    #             - "new"
-    #             - NOT ACTIVE "import"
-        
-    #     IMPORTANT : data is priotized over file_path
-
-    #     Does not support import_mode options except items
-    #     """
-    #     # Checks if action is correct
-    #     if not action in ["update", "new"]:
-    #         data = "Action is not supported"
-    #         self.logger.error("{} :: {} (post_biblio) :: {}".format(str(id), self.service, data))
-    #         return False, data
-
-    #     # Checks if data is looks like valid MARCXML
-    #     valid_data, data = validate_xml(data, file_path) # If valid_data is False, data is an error msg
-    #     if not valid_data:
-    #         self.logger.error("{} :: {} (update_biblio) :: {}".format(str(id), self.service, data))
-    #         return False, data
-
-    #     # If the action is update
-    #     if action == "update":
-    #         # Checks if the provided ID is a number
-    #         valid_bibnb, bibnb = validate_bibnb(id)
-    #         # Leaves if not
-    #         if not valid_bibnb:
-    #             data = "Invalid input biblionumber"
-    #             self.logger.error("{} :: {} (update_biblio) :: ".format(str(id), self.service, data))
-    #             return False, data
-            
-    #         api = "bib/" + bibnb
-
-    #     # If it is not an update
-    #     else:
-    #         api = action + "_bib"
-        
-    #     # Checks if it must parse items
-    #     include_item = update_item(items)
-
-    #     # Updates the data
-    #     headers = {"Content-Type": "text/xml"}
-    #     try:
-    #         r = requests.post('{}{}{}'.format(self.endpoint, api, include_item), cookies=self.cookie_jar, headers=headers, data=data)
-    #         r.raise_for_status()
-    #     except requests.exceptions.RequestException as generic_error:
-    #         self.logger.error("{} (update_biblio) :: Generic exception || URL : {} || Status code : {} || Reason : {} || {}".format(self.service, r.url, r.status_code, r.reason, generic_error))
-    #         if r.status_code == 404:
-    #             return False, "Record biblionumber {} does not exist".format(bibnb)
-    #         else:
-    #             return False, "Generic exception"
-    #     else:
-    #         self.logger.debug(("{} :: {} ({}_biblio) :: Record updated".format(str(id), self.service, action)))
-    #         return True, r.content.decode('utf-8')
